@@ -46,16 +46,17 @@ class PeriodScheduler():
         self.__sched.run()
 
 class MeatureLatency():
-    def __init__(self):
+    def __init__(self, id, server_port):
         self.__sched = PeriodScheduler()
         self.__backend_dir = "/root/lld/backend/"
-        self.__input = self.__backend_dir + "data.txt"
-        self.__ouput = self.__backend_dir + "output.txt"
+        self.__input = "data%d.txt" %id
+        self.__ouput = "output%d.txt" %id
+        self.__server_port = server_port
         
     def __DealingData(self):
         datas = []
         label = "ms" # "duration"
-        ifile = open(self.__input, 'r')
+        ifile = open(self.__backend_dir + self.__input, 'r')
         lines = ifile.readlines()
         for line in lines:
             if label in line:
@@ -66,7 +67,7 @@ class MeatureLatency():
                 datas[-1] += " " + val_in_us + '\n'
         
         # ouput the data to frontend
-        ofile = open(self.__ouput, 'w')
+        ofile = open(self.__backend_dir + self.__ouput, 'w')
         ofile.writelines(datas)
         ofile.write("END\n")
         ofile.close()
@@ -81,7 +82,7 @@ class MeatureLatency():
         
     def __PortOwtraffic(self):
         self.__sched.DisplayTimeStamp()
-        os.system("cd " + self.__backend_dir + "; /root/lld/owtraffic/owtraffic")
+        os.system("cd " + self.__backend_dir + "; /root/lld/owtraffic/owtraffic --server-port %d --output-file %s" %(self.__server_port, self.__backend_dir + self.__input))
         self.__DealingData()
         self.__sched.Enter(10, 0, MeatureLatency.__PortOwtraffic,[self])
         self.__sched.DisplayTimeStamp()
@@ -91,8 +92,10 @@ class MeatureLatency():
         self.__sched.Run()
 
 if __name__ == "__main__":
-    meature_latency = MeatureLatency()
-    ow_thread = threading.Thread(target = MeatureLatency.Run, args=[meature_latency])
-    ow_thread.start()
+    tasks = [(1, 44444), (2, 44443)]
+    for task in tasks: 
+        meature_latency = MeatureLatency(task[0], task[1])
+        ow_thread = threading.Thread(target = MeatureLatency.Run, args=[meature_latency])
+        ow_thread.start()
     app.run('0.0.0.0')
-    
+

@@ -1,15 +1,18 @@
 #ifndef __UDP__H__ 
 #define __UDP__H__
 
-//#include <sched.h>
+#include <string>
 
-// common
-const int kServerPort = 44444;
-extern const char *kServerIP;
+extern std::string kClientIP;
+extern int kClientPort;
 
-const int kUdpPacketNum = 10000;
-const int kUdpPacketSize = 222; // plus ip(20)+udp(8).totally equal to 250
+extern std::string kServerIP;
+extern int kServerPort;
 
-const int kInterval = 8000; // unit is usec.
+extern std::string kOuputFile;
+
+extern int kInterval; // unit is usec.
+extern int kUdpPacketNum;
+extern int kUdpPayloadSize; // plus ip(20)+udp(8)
 
 #endif /* __UDP__H__ */

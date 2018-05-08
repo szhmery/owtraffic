@@ -14,41 +14,78 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
-#include "utility.h"
+#include <vector>
+#include "SchedPriority.h"
 #include "udp.h"
 using namespace std;
 
-//const char *kServerIP = "127.0.0.1";
-const char *kServerIP = "192.33.1.3";
+#define PrintServer(fmt,args...) printf("Server " fmt, ##args)
 
-int recv_cnt = 0;
-int deal_cnt = 0;
+struct PacketInfo {
+    struct timespec send_ts; // sent by client
+    unsigned int send_seq;   // sent by client
+    struct timespec recv_ts; // stamped by server main thread
+};
 
-char packets[kUdpPacketNum][kUdpPacketSize];
-struct timespec recv_ts[kUdpPacketNum];
-const long long kSecInNs = 1000000000, kUsecInNs = 1000, kMsInNs = 1000000;
-const long long kSecInMs = 1000;
+struct PacketBuffer {
+    PacketBuffer() : recv_buf(NULL), deal_buf(NULL), deal_done(true) {}
+    vector<PacketInfo> *recv_buf;
+    vector<PacketInfo> *deal_buf;
+    bool deal_done; //only this is false, dealing thread will start to work.
 
-void Display(fstream &f, const char *label, const long long &t) {
-    long long ms, us;
-    ms = t/kMsInNs;
-    us = (t%kMsInNs)/kUsecInNs;
-	f << label << ": " << ms << "." << setw(3) << us << "\n";
-}
+    void Swap() {
+        if (not deal_done) {
+            PrintServer("FATAL error. Dealing thread does not"
+                        " have enough time to dealing packets\n");
+            exit(1);
+        }
 
-void* DealingPacket(void *arg) {
-    fstream f;
-    f.open("./data.txt", ios::out);
-    f.fill('0');
-	struct timespec duration;
-	long long ms, us;
-	long long cur = 0, low = LLONG_MAX, high =0, avg = 0;
-	int send_seq = 0;
-    while (deal_cnt < kUdpPacketNum and send_seq < kUdpPacketNum) {
-        while (deal_cnt < recv_cnt) {
-            send_seq = *reinterpret_cast<int *>(packets[deal_cnt] + sizeof(struct timespec));
-            struct timespec *src = (struct timespec *)packets[deal_cnt];
-            struct timespec *dst = &recv_ts[deal_cnt];
+        swap(recv_buf, deal_buf);
+        deal_done = false;
+//        PrintServer("deal_done false %ld\n", time(0));
+    }
+
+    void SetPacketNumber() {
+        const int kMaxMTUSize = 2000;
+        buffer1 = vector<PacketInfo>(kUdpPacketNum + (kMaxMTUSize/sizeof(PacketInfo)+1));
+        buffer2 = buffer1;
+        recv_buf = &buffer1;
+        deal_buf = &buffer2;
+    }
+
+private:
+    vector<PacketInfo> buffer1;
+    vector<PacketInfo> buffer2;
+};
+
+PacketBuffer packet_buf;
+
+struct PacketDealer {
+    static const long long kSecInNs = 1000000000;
+    static const long long kSecInMs = 1000;
+    static const long long kUsecInNs = 1000;
+    static const long long kMsInNs = 1000000;
+
+    static void Display(fstream &f, const char *label, const long long &t) {
+        long long ms, us;
+        ms = t/kMsInNs;
+        us = (t%kMsInNs)/kUsecInNs;
+//        f << label << ": " << ms << "." << setw(3) << us << "\n";
+        f << label << " " << ms << setw(3) << us << "\n";
+    }
+
+    static void DealPacketBuffer(string temp_file, vector<PacketInfo> &packets) {
+        fstream f;
+        f.open(temp_file.c_str(), ios::out);
+        f.fill('0');
+        struct timespec duration;
+        long long ms, us;
+        long long cur = 0, low = LLONG_MAX, high =0, avg = 0;
+        int deal_cnt = 0;
+        while (deal_cnt < kUdpPacketNum) {
+//            unsigned int send_seq = packets[deal_cnt].send_seq;
+            struct timespec *src = &packets[deal_cnt].send_ts;
+            struct timespec *dst = &packets[deal_cnt].recv_ts;
             if (dst->tv_nsec < src->tv_nsec) {
                 dst->tv_nsec += 1000000000;
                 dst->tv_sec -= 1;
@@ -58,22 +95,54 @@ void* DealingPacket(void *arg) {
             ms = duration.tv_sec*kSecInMs + duration.tv_nsec/kMsInNs;
             us = (duration.tv_nsec%kMsInNs)/kUsecInNs;
 
-            f << "send_seq:" << send_seq << " rec_seq:" << deal_cnt+1 << " duration(ms): " << ms <<
-                 "." << setw(3) << us << "\n";
+//            f << "send_seq:" << send_seq << " rec_seq:" << deal_cnt+1 << " duration(ms): " << ms <<
+//                 "." << setw(3) << us << "\n";
+            f << deal_cnt+1 << " " << ms << setw(3) << us << "\n";
 
             cur = duration.tv_sec *kSecInNs + duration.tv_nsec ;
             low = std::min(low, cur);
             high = std::max(high, cur);
             avg += cur;
             ++deal_cnt;
-        }    
+        }
+//        Display(f, "Average Latency(ms)", avg/kUdpPacketNum);
+//        Display(f, "Min Latency(ms)", low);
+//        Display(f, "Max Latency(ms)", high);
+
+        Display(f, "Average ", avg/kUdpPacketNum);
+        Display(f, "Min ", low);
+        Display(f, "Max ", high);
+        f << "END";
+
+        f.close();
     }
-    Display(f, "Average Latency(ms)", avg/kUdpPacketNum);
-    Display(f, "Min Latency(ms)", low);
-    Display(f, "Max Latency(ms)", high);
-    f.close();
-    exit(0);
-}
+
+    static void* DealingPacketThread(void *arg) {
+        fstream f;
+        f.open(kOuputFile.c_str(), ios::out);
+        f.close();
+
+        string temp_file = kOuputFile  + "_temp";
+        const int k100Ms = 100000;
+        while (1) {
+            while (packet_buf.deal_done) usleep(k100Ms);
+//            PrintServer("DealPacketBuffer before %ld\n", time(0));
+            vector<PacketInfo> &packets = *packet_buf.deal_buf;
+            DealPacketBuffer(temp_file, packets);
+            packet_buf.deal_done = true;
+            if (unlink(kOuputFile.c_str()) != 0) {
+                PrintServer("Fail to remove output file %s\n", kOuputFile.c_str());
+                exit(1);
+            }
+            if (rename(temp_file.c_str(), kOuputFile.c_str()) != 0) {
+                PrintServer("Fail to rename temp file %s to output file %s\n",
+                            temp_file.c_str(), kOuputFile.c_str());
+                exit(1);
+            }
+//            PrintServer("DealPacketBuffer after %ld\n", time(0));
+        }
+    }
+};
 
 void server_entry() {
     int sockfd;
@@ -82,17 +151,18 @@ void server_entry() {
     struct sockaddr_in addr_ser, addr_cli;
 
     SetProcessHighPriority();
+    packet_buf.SetPacketNumber();
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd == -1) {
-        printf("socket error:%s\n", strerror(errno));
+        PrintServer("socket error:%s\n", strerror(errno));
         return;
     }
 
     int rev_buf_size = 12 * 1024 * 1024;  // 12m buffer
     err = setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (const char *)&rev_buf_size,sizeof(rev_buf_size));
     if (err == -1) {
-        printf("setsockopt buffer size error:%s\n", strerror(errno));
+        PrintServer("setsockopt buffer size error:%s\n", strerror(errno));
         return;
     }
 
@@ -102,31 +172,36 @@ void server_entry() {
     addr_ser.sin_port = ntohs(kServerPort);
     err = bind(sockfd, (struct sockaddr *) &addr_ser, sizeof(addr_ser));
     if (err == -1) {
-        printf("bind error:%s\n", strerror(errno));
+        PrintServer("bind error:%s\n", strerror(errno));
         return;
     }
     addrlen = sizeof(struct sockaddr);
     
     pthread_t tid;
-    err = pthread_create(&tid, NULL, DealingPacket, NULL);
+    err = pthread_create(&tid, NULL, PacketDealer::DealingPacketThread, NULL);
     if (err != 0) {
-        printf("Can't create dealing thread :[%s]\n", strerror(err));
+        PrintServer("Can't create dealing thread :[%s]\n", strerror(err));
         return;
     } else {
-        printf("Dealing Thread created successfully\n");
+        PrintServer("Dealing Thread created successfully\n");
     }
 
     while (1) {
-//        printf("waiting for client......\n");
-        n = recvfrom(sockfd, packets[recv_cnt], kUdpPacketSize, 0, (struct sockaddr *) &addr_cli, &addrlen);
-        if (n == -1) {
-            printf("recvfrom error:%s\n", strerror(errno));
-            return;
-        }
+//        PrintServer("waiting for client......\n");
+        int recv_cnt = 0;
+        vector<PacketInfo> &packets = *packet_buf.recv_buf;
+        while (recv_cnt < kUdpPacketNum) {
+            n = recvfrom(sockfd, &packets[recv_cnt], kUdpPayloadSize, 0, (struct sockaddr *) &addr_cli, &addrlen);
+            if (n == -1) {
+                PrintServer("recvfrom error:%s\n", strerror(errno));
+                return;
+            }
 
-        clock_gettime(CLOCK_REALTIME, &recv_ts[recv_cnt]);
-        ++recv_cnt;
-//        printf("%d\n", recv_cnt);
+            clock_gettime(CLOCK_REALTIME, &packets[recv_cnt].recv_ts);
+            ++recv_cnt;
+//        PrintServer("%d\n", recv_cnt);
+        }
+        packet_buf.Swap();
     }
 
     exit(0);
