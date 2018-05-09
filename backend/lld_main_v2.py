@@ -97,15 +97,19 @@ class TestbedController:
         self.__sched = scheduler
 
     def __CheckUsChanUtilization(self):
+        utilizations = []
         wasted_bands = []
         for md in self.__mds:
             text = self.__tp.ExecuteCmd("show interfaces cable %s mac-scheduler | i data grants" %md)
             percent = ObtainNumber(text.split(":")[1], 0)
+            utilizations.append(percent)
             wasted_bands.append(26.0*percent/100 - 11)
-        content = "Normal %f\nWaterfall %f\nEND" %(wasted_bands[0], wasted_bands[1])
+        content1 = "Channel1 %f\nChannel2 %f\n" % (utilizations[0], utilizations[1])
+        content2 = "Normal %f\nWaterfall %f\nEND" %(wasted_bands[0], wasted_bands[1])
         
         outfile = open(json_data["OutputFile"], 'w')
-        outfile.write(content)
+        outfile.write(content1)
+        outfile.write(content2)
         outfile.close()
                         
     def MonitorChanUtilization(self):   

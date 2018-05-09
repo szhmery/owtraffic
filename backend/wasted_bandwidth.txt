@@ -1,3 +1,5 @@
+Channel1 86.000000
+Channel2 66.000000
 Normal 11.360000
-Waterfall 5.900000
+Waterfall 6.160000
 END
